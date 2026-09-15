@@ -32,6 +32,7 @@ import { retrievalEngine } from '../retrieval/retrievalEngine';
 import { geminiResearchEngine } from './geminiResearchEngine';
 import { quantStrategyEngine } from '../quant/quantStrategyEngine';
 import { portfolioIntelligenceService } from '../portfolio/portfolioIntelligenceService';
+import { persistenceManager } from '../../persistence/persistenceManager';
 
 export class ResearchNotebookService {
   private static instance: ResearchNotebookService;
@@ -484,6 +485,14 @@ export class ResearchNotebookService {
     notebook.sourceCount = coverage.sourceCount;
     notebook.updatedAt = snapshot.createdAt;
 
+    // 16. Persist snapshot and notebook
+    persistenceManager.getSnapshotRepository().save(snapshot).catch(err => {
+      console.warn('[ResearchNotebookService] Failed to persist snapshot:', err);
+    });
+    persistenceManager.getNotebookRepository().save(notebook).catch(err => {
+      console.warn('[ResearchNotebookService] Failed to persist notebook:', err);
+    });
+
     return snapshot;
   }
 
@@ -922,12 +931,55 @@ export class ResearchNotebookService {
     return this.snapshots.get(notebookId) || [];
   }
 
+  public getLatestSnapshot(notebookId: string): ResearchSnapshot | null {
+    const snaps = this.getSnapshots(notebookId);
+    return snaps.length > 0 ? snaps[snaps.length - 1] : null;
+  }
+
   public getSnapshot(snapshotId: string): ResearchSnapshot | null {
     for (const snaps of this.snapshots.values()) {
       const match = snaps.find(s => s.snapshotId === snapshotId);
       if (match) return match;
     }
     return null;
+  }
+
+  public async getSnapshotAsync(snapshotId: string): Promise<ResearchSnapshot | null> {
+    const memoryMatch = this.getSnapshot(snapshotId);
+    if (memoryMatch) return memoryMatch;
+
+    try {
+      const persisted = await persistenceManager.getSnapshotRepository().get(snapshotId);
+      if (persisted) {
+        // Cache in memory
+        const existing = this.snapshots.get(persisted.notebookId) || [];
+        if (!existing.some(s => s.snapshotId === persisted.snapshotId)) {
+          existing.push(persisted);
+          this.snapshots.set(persisted.notebookId, existing);
+        }
+        return persisted;
+      }
+    } catch (err) {
+      console.warn('[ResearchNotebookService] Error loading snapshot from persistence:', err);
+    }
+    return null;
+  }
+
+  public async hydrateFromPersistence(): Promise<number> {
+    try {
+      const snapshots = await persistenceManager.getSnapshotRepository().getAll();
+      for (const snap of snapshots) {
+        const existing = this.snapshots.get(snap.notebookId) || [];
+        if (!existing.some(s => s.snapshotId === snap.snapshotId)) {
+          existing.push(snap);
+          this.snapshots.set(snap.notebookId, existing);
+        }
+      }
+      return snapshots.length;
+    } catch (err) {
+      console.warn('[ResearchNotebookService] Hydration failed:', err);
+      return 0;
+    }
   }
 }
 

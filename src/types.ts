@@ -604,7 +604,10 @@ export interface WatchlistItem {
   alertThreshold?: string;
 }
 
-export type CanonicalSecurity = Stock;
+export type CanonicalSecurity = SecurityIdentifier & Partial<Stock> & {
+  canonicalId?: string;
+  ticker?: string;
+};
 
 export interface AppState {
   securities: Record<string, Stock>;
@@ -1444,6 +1447,7 @@ export interface ResearchRequest {
 
 export type EvidenceSourceType =
   | 'SEC_EDGAR'
+  | 'OFFICIAL_FILINGS'
   | 'MARKET_DATA'
   | 'PORTFOLIO'
   | 'CANONICAL_METADATA'
@@ -1497,6 +1501,8 @@ export interface EvidenceItem {
   metadata?: Record<string, unknown>;
   hasConflict?: boolean;
   conflictDetails?: string;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface EvidenceFilter {
@@ -1521,6 +1527,7 @@ export interface IEvidenceRepository {
   getEvidenceBySource(sourceType: EvidenceSourceType): EvidenceItem[];
   getEvidenceAvailableAsOf(asOfDate: string | Date, filter?: EvidenceFilter): EvidenceItem[];
   queryEvidence(filter: EvidenceFilter): EvidenceItem[];
+  query?(filter: EvidenceFilter): EvidenceItem[];
   removeEvidence(evidenceId: string): boolean;
   getAll(): EvidenceItem[];
   count(): number;
@@ -1546,7 +1553,7 @@ export interface EvidenceGatherOptions {
 export type RetrievalMode = 'SEMANTIC' | 'DETERMINISTIC_FALLBACK';
 
 export interface EvidenceQuery {
-  query: string;
+  query?: string;
   securityId?: string;
   securityIds?: string[];
   market?: MarketRegion;
@@ -1559,6 +1566,7 @@ export interface EvidenceQuery {
   asOfDate?: string | Date;
   limit?: number;
   minRelevanceScore?: number;
+  userId?: string;
 }
 
 export interface EvidenceChunk {
@@ -2405,6 +2413,8 @@ export interface ResearchNotebook {
   researchAsOfDate: string | null;
   sourceCoverage: SourceCoverage;
   provenance: PointInTimeProvenance;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface ResearchSnapshot {
@@ -2426,6 +2436,8 @@ export interface ResearchSnapshot {
     missing: string[];
     unavailable: string[];
   };
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface ResearchNotebookResponse {
@@ -2481,6 +2493,8 @@ export interface ResearchDocument {
   availableFrom?: string;
   uploadedAt: string;
   uploadedBy?: string;
+  ownerUserId?: string;
+  userId?: string;
   pageCount?: number;
   characterCount?: number;
   rowCount?: number;
@@ -2591,7 +2605,7 @@ export interface DecisionDimensionAssessment {
   contradictingEvidenceIds: string[];
   dataStatus: 'REAL' | 'CALCULATED' | 'SIMULATED' | 'UNAVAILABLE' | 'MIXED';
   limitations?: string[];
-  metrics?: Record<string, string | number | boolean | null>;
+  metrics?: Record<string, string | number | boolean | null | string[]>;
 }
 
 export interface DecisionInvalidationCondition {
@@ -2634,6 +2648,8 @@ export interface DecisionFrameworkConfiguration {
   backtestWeight: number;
   riskWeight: number;
   portfolioFitWeight: number;
+  evidenceCoverageWeight?: number;
+  thesisStatusWeight?: number;
   minimumEvidenceThreshold: number;
 }
 
@@ -2796,6 +2812,95 @@ export interface DecisionCompareRequest {
   securityIdB: string;
   asOfDate?: string;
   configuration?: Partial<DecisionFrameworkConfiguration>;
+}
+
+// ==========================================
+// PHASE 16: PERSISTENCE & AUDIT ARCHITECTURE
+// ==========================================
+
+export type PersistenceStatusCode = 'CONNECTED' | 'DEVELOPMENT_ADAPTER' | 'UNCONFIGURED' | 'ERROR';
+export type PersistenceProviderType = 'POSTGRES' | 'DISK_STORAGE' | 'IN_MEMORY';
+
+export interface PersistenceStatusResponse {
+  status: PersistenceStatusCode;
+  provider: PersistenceProviderType;
+  environment: string;
+  isPostgresConfigured: boolean;
+  migrationVersion: number;
+  entityCounts: {
+    securities: number;
+    documents: number;
+    evidence: number;
+    notebooks: number;
+    snapshots: number;
+    decisions: number;
+    strategies: number;
+    backtests: number;
+    alerts: number;
+    queries: number;
+  };
+  details: {
+    diskBacked: boolean;
+    storagePath?: string;
+    schemaVersion: string;
+    lastPersistedAt?: string;
+  };
+}
+
+// ==========================================
+// PHASE 17: AUTHENTICATION, AUTHORIZATION & USER DATA ISOLATION
+// ==========================================
+
+export type UserStatus = 'ACTIVE' | 'DISABLED';
+
+export interface User {
+  userId: string;
+  email: string;
+  normalizedEmail: string;
+  passwordHash: string;
+  status: UserStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt: string | null;
+}
+
+export interface SafeUser {
+  userId: string;
+  email: string;
+  status: UserStatus;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+export interface AuthenticatedSession {
+  sessionId: string;
+  userId: string;
+  createdAt: string;
+  expiresAt: string;
+  lastActivityAt: string;
+  ipAddress?: string;
+  userAgent?: string;
+  isValid: boolean;
+}
+
+export interface AuthResponse {
+  authenticated: boolean;
+  user: SafeUser | null;
+  session?: {
+    sessionId: string;
+    expiresAt: string;
+  };
+  message?: string;
+}
+
+export interface RegisterRequest {
+  email: string;
+  password: string;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
 }
 
 

@@ -33,7 +33,8 @@ import {
   DecisionKeyRisk,
   DecisionCatalyst,
   HistoricalPriceBar,
-  ResearchEvidenceItem
+  ResearchEvidenceItem,
+  EvidenceItem
 } from '../../../src/types';
 import { DEFAULT_DECISION_CONFIG } from './defaultConfig';
 
@@ -59,7 +60,7 @@ export interface DecisionScoringInputs {
   marketData?: {
     currentPrice: number;
     currency: string;
-    bars: HistoricalPriceBar[];
+    bars: Array<Partial<HistoricalPriceBar> & { timestamp: string; close: number }>;
     provider: string;
     epistemicStatus: 'REAL' | 'SIMULATED' | 'CALCULATED' | 'UNAVAILABLE';
     sma50?: number;
@@ -94,7 +95,7 @@ export interface DecisionScoringInputs {
     portfolioBetaContribution?: number;
     sectorWeightPct?: number;
   };
-  researchEvidence?: ResearchEvidenceItem[];
+  researchEvidence?: Array<Partial<ResearchEvidenceItem & EvidenceItem> & { evidenceId?: string; id?: string; [key: string]: any }>;
   notebookSnapshot?: {
     available: boolean;
     notebookId?: string;
@@ -139,7 +140,9 @@ export class DecisionScoringEngine {
     const asOfDate = inputs.asOfDate;
     const generatedAt = new Date().toISOString();
     const sec = inputs.security;
-    const decisionId = `dec-${sec.canonicalId}-${asOfDate}-${config.version}`;
+    const secId = sec.canonicalId || (sec as any).id || (sec as any).symbol || 'sec';
+    const secTicker = sec.ticker || (sec as any).symbol || (sec as any).ticker || secId;
+    const decisionId = `dec-${secId}-${asOfDate}-${config.version}`;
 
     // 1. Evaluate Evidence Coverage
     const evidenceItems = inputs.researchEvidence || [];
@@ -193,10 +196,10 @@ export class DecisionScoringEngine {
     const portfolioFitDim = this.evaluatePortfolioFit(inputs, config);
 
     // 10. Evaluate Dimension: Evidence Coverage
-    const evidenceCoverageDim = this.evaluateEvidenceCoverageDimension(coverageRating, totalEvidenceCount, availableCategories, missingCategories);
+    const evidenceCoverageDim = this.evaluateEvidenceCoverageDimension(coverageRating, totalEvidenceCount, availableCategories, missingCategories, config);
 
     // 11. Evaluate Dimension: Thesis Status
-    const thesisDim = this.evaluateThesisStatusDimension(inputs);
+    const thesisDim = this.evaluateThesisStatusDimension(inputs, config);
 
     const dimensionAssessments: Record<DecisionDimensionKey, DecisionDimensionAssessment> = {
       fundamentalQuality: fundamentalDim,
@@ -317,7 +320,7 @@ export class DecisionScoringEngine {
 
     // 19. Initial Deterministic Explanation
     const explanation = {
-      summary: `The deterministic decision rules evaluate ${sec.ticker} as ${overallAssessment} with ${conviction} conviction as of ${asOfDate}. ` +
+      summary: `The deterministic decision rules evaluate ${secTicker} as ${overallAssessment} with ${conviction} conviction as of ${asOfDate}. ` +
         `This analytical assessment synthesizes ${dimensionsList.length} distinct dimensions grounded in verified institutional evidence.`,
       whyDrivers: keyDrivers.slice(0, 4),
       counterEvidence: counterEvidence.slice(0, 4),
@@ -330,7 +333,7 @@ export class DecisionScoringEngine {
 
     return {
       decisionId,
-      securityId: sec.canonicalId,
+      securityId: secId,
       canonicalSecurity: sec,
       asOfDate,
       generatedAt,
@@ -388,8 +391,8 @@ export class DecisionScoringEngine {
         priceToFCF: inputs.financials?.priceToFCF,
         evToEbitda: inputs.financials?.evToEbitda,
         earningsYield: inputs.financials?.earningsYield,
-        availableMetrics: (valuationDim.metrics?.availableMetrics as string[]) || [],
-        missingMetrics: (valuationDim.metrics?.missingMetrics as string[]) || [],
+        availableMetrics: (valuationDim.metrics?.availableMetrics as any as string[]) || [],
+        missingMetrics: (valuationDim.metrics?.missingMetrics as any as string[]) || [],
         rationale: valuationDim.rationale
       },
       fundamentalContext: {
@@ -989,7 +992,8 @@ export class DecisionScoringEngine {
     rating: 'HIGH' | 'MODERATE' | 'LIMITED' | 'INSUFFICIENT',
     totalCount: number,
     availableCategories: string[],
-    missingCategories: string[]
+    missingCategories: string[],
+    config: DecisionFrameworkConfiguration
   ): DecisionDimensionAssessment {
     let score = 0.0;
     let category: 'POSITIVE' | 'NEUTRAL' | 'CAUTIOUS' | 'INSUFFICIENT' = 'NEUTRAL';
@@ -1017,7 +1021,7 @@ export class DecisionScoringEngine {
       assessment: rating,
       category,
       score,
-      weight: 0.05,
+      weight: config.evidenceCoverageWeight ?? 0.05,
       rationale: `Evidence base contains ${totalCount} items across ${availableCategories.length} categories.${missingNotice} Missing evidence is treated as unknown, not negative.`,
       supportingEvidenceIds: [],
       contradictingEvidenceIds: [],
@@ -1029,7 +1033,7 @@ export class DecisionScoringEngine {
     };
   }
 
-  private evaluateThesisStatusDimension(inputs: DecisionScoringInputs): DecisionDimensionAssessment {
+  private evaluateThesisStatusDimension(inputs: DecisionScoringInputs, config: DecisionFrameworkConfiguration): DecisionDimensionAssessment {
     const snap = inputs.notebookSnapshot;
     if (!snap || !snap.available) {
       return {
@@ -1038,7 +1042,7 @@ export class DecisionScoringEngine {
         assessment: 'NO_PRIOR_THESIS',
         category: 'NEUTRAL',
         score: 0.0,
-        weight: 0.05,
+        weight: config.thesisStatusWeight ?? 0.05,
         rationale: 'No prior research notebook snapshot exists to track thesis evolution.',
         supportingEvidenceIds: [],
         contradictingEvidenceIds: [],
@@ -1111,9 +1115,10 @@ export class DecisionScoringEngine {
   ): DecisionInvalidationCondition[] {
     const conditions: DecisionInvalidationCondition[] = [];
     const sec = inputs.security;
+    const secId = sec.canonicalId || (sec as any).id || (sec as any).symbol || 'sec';
 
     conditions.push({
-      conditionId: `inv-${sec.canonicalId}-rev`,
+      conditionId: `inv-${secId}-rev`,
       category: 'FUNDAMENTAL',
       condition: 'Revenue growth contracts into negative territory for two consecutive reporting periods',
       threshold: 'Revenue YoY < 0.0%',
@@ -1124,7 +1129,7 @@ export class DecisionScoringEngine {
     });
 
     conditions.push({
-      conditionId: `inv-${sec.canonicalId}-margin`,
+      conditionId: `inv-${secId}-margin`,
       category: 'FUNDAMENTAL',
       condition: 'Operating margin contracts by more than 300 bps across consecutive quarters',
       threshold: 'Operating Margin Delta < -300 bps',
@@ -1135,7 +1140,7 @@ export class DecisionScoringEngine {
     });
 
     conditions.push({
-      conditionId: `inv-${sec.canonicalId}-deathcross`,
+      conditionId: `inv-${secId}-deathcross`,
       category: 'TECHNICAL',
       condition: '50-day moving average drops below the 200-day moving average (Death Cross)',
       threshold: 'SMA50 < SMA200',
@@ -1150,7 +1155,7 @@ export class DecisionScoringEngine {
     });
 
     conditions.push({
-      conditionId: `inv-${sec.canonicalId}-valuation`,
+      conditionId: `inv-${secId}-valuation`,
       category: 'VALUATION',
       condition: 'Price-to-Earnings ratio expands beyond 65x or exceeds 2.5 standard deviations above 3-year median',
       threshold: 'P/E > 65.0x',
@@ -1161,7 +1166,7 @@ export class DecisionScoringEngine {
     });
 
     conditions.push({
-      conditionId: `inv-${sec.canonicalId}-portfolio`,
+      conditionId: `inv-${secId}-portfolio`,
       category: 'PORTFOLIO',
       condition: 'Portfolio position weight reaches or exceeds configured concentration ceiling (20.0%)',
       threshold: 'Holding Weight >= 20.0%',
@@ -1172,7 +1177,7 @@ export class DecisionScoringEngine {
     });
 
     conditions.push({
-      conditionId: `inv-${sec.canonicalId}-filing`,
+      conditionId: `inv-${secId}-filing`,
       category: 'FILING',
       condition: 'Filing of Item 4.02 (Non-Reliance on Previously Issued Financial Statements) or SEC enforcement 8-K',
       threshold: 'SEC Item 4.02 / Regulatory Enforcement',
@@ -1188,6 +1193,8 @@ export class DecisionScoringEngine {
   private buildKeyRisks(inputs: DecisionScoringInputs, dimensions: DecisionDimensionAssessment[]): DecisionKeyRisk[] {
     const risks: DecisionKeyRisk[] = [];
     const sec = inputs.security;
+    const secId = sec.canonicalId || (sec as any).id || (sec as any).symbol || 'sec';
+    const secTicker = sec.ticker || (sec as any).symbol || (sec as any).ticker || secId;
 
     // Add notebook snapshot risks if available
     if (inputs.notebookSnapshot?.risks && inputs.notebookSnapshot.risks.length > 0) {
@@ -1195,7 +1202,7 @@ export class DecisionScoringEngine {
         risks.push({
           riskId: `risk-nb-${idx}`,
           title: r.title,
-          description: r.description || `Identified through ${sec.ticker} research notebook.`,
+          description: r.description || `Identified through ${secTicker} research notebook.`,
           severity: r.severity,
           category: 'RESEARCH_DISCLOSURE',
           evidenceIds: []
@@ -1207,7 +1214,7 @@ export class DecisionScoringEngine {
     const valDim = dimensions.find(d => d.dimension === 'valuationContext');
     if (valDim?.assessment === 'ELEVATED' || valDim?.assessment === 'EXTREME') {
       risks.push({
-        riskId: `risk-val-${sec.canonicalId}`,
+        riskId: `risk-val-${secId}`,
         title: 'Valuation Multiple Compression Risk',
         description: valDim.rationale,
         severity: valDim.assessment === 'EXTREME' ? 'HIGH' : 'MEDIUM',
@@ -1220,7 +1227,7 @@ export class DecisionScoringEngine {
     const portDim = dimensions.find(d => d.dimension === 'portfolioFit');
     if (portDim?.assessment === 'CAUTIOUS') {
       risks.push({
-        riskId: `risk-port-${sec.canonicalId}`,
+        riskId: `risk-port-${secId}`,
         title: 'Portfolio Concentration Limit',
         description: portDim.rationale,
         severity: 'MEDIUM',
@@ -1232,7 +1239,7 @@ export class DecisionScoringEngine {
     // Default macro/market risk if empty
     if (risks.length === 0) {
       risks.push({
-        riskId: `risk-macro-${sec.canonicalId}`,
+        riskId: `risk-macro-${secId}`,
         title: 'Market Volatility & Sector Headwinds',
         description: 'Macroeconomic shifts, interest rate volatility, and cyclical industry fluctuations may impact performance.',
         severity: 'LOW',
@@ -1247,13 +1254,15 @@ export class DecisionScoringEngine {
   private buildCatalysts(inputs: DecisionScoringInputs): DecisionCatalyst[] {
     const catalysts: DecisionCatalyst[] = [];
     const sec = inputs.security;
+    const secId = sec.canonicalId || (sec as any).id || (sec as any).symbol || 'sec';
+    const secTicker = sec.ticker || (sec as any).symbol || (sec as any).ticker || secId;
 
     if (inputs.notebookSnapshot?.catalysts && inputs.notebookSnapshot.catalysts.length > 0) {
       inputs.notebookSnapshot.catalysts.forEach((c, idx) => {
         catalysts.push({
           catalystId: `cat-nb-${idx}`,
           title: c.title,
-          description: c.description || `Derived from verified disclosures for ${sec.ticker}.`,
+          description: c.description || `Derived from verified disclosures for ${secTicker}.`,
           type: c.type || 'DISCLOSED',
           evidenceIds: []
         });
@@ -1262,7 +1271,7 @@ export class DecisionScoringEngine {
 
     if (catalysts.length === 0) {
       catalysts.push({
-        catalystId: `cat-default-${sec.canonicalId}`,
+        catalystId: `cat-default-${secId}`,
         title: 'Upcoming Periodic Financial Disclosure (10-Q / Quarterly Results)',
         description: 'Next audited quarterly financial disclosure to confirm continued revenue run-rate and margin trajectory.',
         type: 'DISCLOSED',

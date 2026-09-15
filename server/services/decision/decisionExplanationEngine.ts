@@ -70,10 +70,12 @@ export class DecisionExplanationEngine {
    */
   public generateDeterministicFallback(assessment: InvestmentDecisionAssessment): InvestmentDecisionAssessment['explanation'] {
     const sec = assessment.canonicalSecurity;
+    const companyName = sec.companyName || sec.name || sec.ticker || 'Security';
+    const ticker = sec.ticker || (sec as any).symbol || (sec as any).id || '';
     const overall = assessment.overallAssessment;
     const conviction = assessment.conviction;
 
-    const summary = `Deterministic Decision Evaluation for ${sec.name} (${sec.ticker}): ` +
+    const summary = `Deterministic Decision Evaluation for ${companyName} (${ticker}): ` +
       `The algorithmic framework classifies the current analytical setup as ${overall} with ${conviction} conviction as of ${assessment.asOfDate}. ` +
       `This assessment is derived across ${assessment.dimensionsList.length} distinct analytical dimensions based on verified point-in-time evidence.`;
 
@@ -126,7 +128,7 @@ CRITICAL CONSTRAINTS:
 3. Do NOT make future return guarantees or claim to predict future stock prices.
 4. Maintain strict institutional composure with precise terminology.
 
-SECURITY: ${sec.name} (${sec.ticker}) · Market: ${sec.market} · Currency: ${sec.currency}
+SECURITY: ${sec.companyName || sec.name || sec.ticker} (${sec.ticker || (sec as any).symbol}) · Market: ${sec.market} · Currency: ${sec.currency}
 DATE: ${assessment.asOfDate}
 OVERALL ASSESSMENT: ${assessment.overallAssessment}
 CONVICTION: ${assessment.conviction}

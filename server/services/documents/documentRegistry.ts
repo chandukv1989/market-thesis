@@ -10,10 +10,28 @@ import {
   DocumentProcessingStatus,
   DocumentRegistryStats
 } from '../../../src/types';
+import { persistenceManager } from '../../persistence/persistenceManager';
 
 export class DocumentRegistry {
   private documents: Map<string, ResearchDocument> = new Map();
   private documentsByHash: Map<string, string> = new Map(); // contentHash -> documentId
+
+  /**
+   * Hydrates memory cache from the persistent repository
+   */
+  public async hydrateFromPersistence(): Promise<number> {
+    try {
+      const persisted = await persistenceManager.getDocumentRepository().getAll();
+      for (const doc of persisted) {
+        this.documents.set(doc.documentId, doc);
+        this.documentsByHash.set(doc.contentHash, doc.documentId);
+      }
+      return persisted.length;
+    } catch (err) {
+      console.warn('[DocumentRegistry] Hydration from persistence error:', err);
+      return 0;
+    }
+  }
 
   /**
    * Registers a document or detects duplicate via contentHash.
@@ -34,9 +52,14 @@ export class DocumentRegistry {
       };
     }
 
-    // 2. Store document
+    // 2. Store document in memory
     this.documents.set(doc.documentId, doc);
     this.documentsByHash.set(doc.contentHash, doc.documentId);
+
+    // 3. Persist asynchronously
+    persistenceManager.getDocumentRepository().save(doc).catch(err => {
+      console.warn('[DocumentRegistry] Failed to persist document:', err);
+    });
 
     return {
       registered: true,

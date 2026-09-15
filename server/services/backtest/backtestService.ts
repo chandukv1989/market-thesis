@@ -7,6 +7,7 @@
 
 import { BacktestConfiguration, BacktestResult, HistoricalPriceBar } from '../../../src/types';
 import { backtestEngine, BacktestEngine } from './backtestEngine';
+import { persistenceManager } from '../../persistence/persistenceManager';
 
 export class BacktestService {
   private static instance: BacktestService;
@@ -50,14 +51,54 @@ export class BacktestService {
       this.resultsCache.set(result.backtestId, result);
     }
 
+    // Persist immutable historical backtest artifact
+    if (result.status === 'COMPLETED') {
+      persistenceManager.getBacktestRepository().save(result).catch(err => {
+        console.warn('[BacktestService] Failed to persist backtest result:', err);
+      });
+    }
+
     return result;
   }
 
   /**
-   * Retrieve a backtest result by ID.
+   * Retrieve a backtest result by ID from memory cache or persistent store.
    */
   public getBacktest(id: string): BacktestResult | null {
     return this.resultsCache.get(id) || null;
+  }
+
+  public async getBacktestAsync(id: string): Promise<BacktestResult | null> {
+    const memory = this.getBacktest(id);
+    if (memory) return memory;
+
+    try {
+      const persisted = await persistenceManager.getBacktestRepository().get(id);
+      if (persisted) {
+        if (persisted.backtestId) {
+          this.resultsCache.set(persisted.backtestId, persisted);
+        }
+        return persisted;
+      }
+    } catch (err) {
+      console.warn('[BacktestService] Error fetching persisted backtest:', err);
+    }
+    return null;
+  }
+
+  public async hydrateFromPersistence(): Promise<number> {
+    try {
+      const persisted = await persistenceManager.getBacktestRepository().getAll();
+      for (const res of persisted) {
+        if (res.backtestId) {
+          this.resultsCache.set(res.backtestId, res);
+        }
+      }
+      return persisted.length;
+    } catch (err) {
+      console.warn('[BacktestService] Hydration failed:', err);
+      return 0;
+    }
   }
 
   /**

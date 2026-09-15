@@ -11,6 +11,7 @@ import {
   EvidenceSourceType,
   IEvidenceRepository
 } from '../../../src/types';
+import { persistenceManager } from '../../persistence/persistenceManager';
 
 /**
  * Generate a deterministic fingerprint for exact deduplication.
@@ -92,7 +93,35 @@ export class EvidenceRepository implements IEvidenceRepository {
     existingIdsWithSameConcept.push(item.evidenceId);
     this.itemsByConceptKey.set(conceptKey, existingIdsWithSameConcept);
 
+    // 5. Persist to backing storage asynchronously
+    persistenceManager.getEvidenceRepository().addEvidence(item).catch(err => {
+      console.warn('[EvidenceRepository] Failed to persist evidence:', err);
+    });
+
     return true;
+  }
+
+  /**
+   * Hydrate memory cache from the persistent repository
+   */
+  public async hydrateFromPersistence(): Promise<number> {
+    try {
+      const persisted = await persistenceManager.getEvidenceRepository().getAll();
+      for (const item of persisted) {
+        const fingerprint = generateEvidenceFingerprint(item);
+        this.itemsById.set(item.evidenceId, item);
+        this.itemsByFingerprint.set(fingerprint, item.evidenceId);
+
+        const conceptKey = generateConceptKey(item);
+        const existing = this.itemsByConceptKey.get(conceptKey) || [];
+        existing.push(item.evidenceId);
+        this.itemsByConceptKey.set(conceptKey, existing);
+      }
+      return persisted.length;
+    } catch (err) {
+      console.warn('[EvidenceRepository] Hydration from persistence failed:', err);
+      return 0;
+    }
   }
 
   /**
@@ -174,6 +203,13 @@ export class EvidenceRepository implements IEvidenceRepository {
     }
 
     return results;
+  }
+
+  /**
+   * Alias for queryEvidence.
+   */
+  public query(filter: EvidenceFilter): EvidenceItem[] {
+    return this.queryEvidence(filter);
   }
 
   /**
@@ -278,7 +314,10 @@ export class EvidenceRepository implements IEvidenceRepository {
         if (!isNaN(end) && pubTime > end) return false;
       }
       if (filter.asOfDate) {
-        const asOf = new Date(filter.asOfDate).getTime();
+        const asOfStr = typeof filter.asOfDate === 'string' ? filter.asOfDate : filter.asOfDate.toISOString();
+        const asOf = asOfStr.includes('T')
+          ? new Date(asOfStr).getTime()
+          : new Date(`${asOfStr}T23:59:59.999Z`).getTime();
         if (!isNaN(asOf) && pubTime > asOf) return false;
       }
     }

@@ -22,11 +22,27 @@ import { researchNotebookService } from './server/services/research/notebookServ
 import { documentIngestionService } from './server/services/documents/documentIngestionService';
 import { documentRegistry } from './server/services/documents/documentRegistry';
 import { decisionIntelligenceService } from './server/services/decision/decisionIntelligenceService';
+import { persistenceManager } from './server/persistence/persistenceManager';
 import { SecurityIdentifier, ResearchAnalysisType, ResearchRequest, EvidenceSourceType, EvidenceEpistemicStatus, ResearchEvidenceItem, MarketDataRequest } from './src/types';
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // ==========================================
+  // PHASE 16: PERSISTENCE INITIALIZATION & HYDRATION
+  // ==========================================
+  try {
+    await persistenceManager.initialize();
+    await Promise.all([
+      documentRegistry.hydrateFromPersistence(),
+      (evidenceService.getRepository() as any).hydrateFromPersistence?.(),
+      researchNotebookService.hydrateFromPersistence(),
+      backtestService.hydrateFromPersistence()
+    ]);
+  } catch (err) {
+    console.error('[Server] Persistence initialization error:', err);
+  }
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -1103,6 +1119,82 @@ async function startServer() {
       }
       const comparison = await decisionIntelligenceService.compareDecisions(request);
       res.json(comparison);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // ==========================================
+  // PHASE 16 - PERSISTENCE & HISTORICAL AUDIT ROUTES
+  // ==========================================
+
+  // Persistence status and health
+  app.get('/api/persistence/status', async (_req, res) => {
+    try {
+      const status = await persistenceManager.getStatus();
+      res.json(status);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // Historical decisions for a security
+  app.get('/api/persistence/decisions/:securityId', async (req, res) => {
+    try {
+      const { securityId } = req.params;
+      const history = await decisionIntelligenceService.getHistoricalDecisions(securityId);
+      res.json({ securityId, history, count: history.length });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // Historical research snapshots for a security
+  app.get('/api/persistence/snapshots/:securityId', async (req, res) => {
+    try {
+      const { securityId } = req.params;
+      const resolved = resolveSecurity(securityId);
+      const targetId = resolved ? resolved.id : securityId;
+      const snapshots = await persistenceManager.getSnapshotRepository().getBySecurityId(targetId);
+      res.json({ securityId: targetId, snapshots, count: snapshots.length });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // Persisted research documents
+  app.get('/api/persistence/documents', async (_req, res) => {
+    try {
+      const docs = await persistenceManager.getDocumentRepository().getAll();
+      res.json({ documents: docs, count: docs.length });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // Persisted evidence query
+  app.get('/api/persistence/evidence', async (req, res) => {
+    try {
+      const securityId = req.query.securityId as string | undefined;
+      const asOfDate = req.query.asOfDate as string | undefined;
+      const items = await persistenceManager.getEvidenceRepository().queryEvidence({ securityId, asOfDate });
+      res.json({ evidence: items, count: items.length });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // Persisted backtests
+  app.get('/api/persistence/backtests', async (_req, res) => {
+    try {
+      const backtests = await persistenceManager.getBacktestRepository().getAll();
+      res.json({ backtests, count: backtests.length });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: errMsg });

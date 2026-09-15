@@ -10,17 +10,19 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/phase5a.test.ts && tsx tests/phase5c.test.ts && tsx tests/fyersProvider.test.ts && tsx tests/phase6.test.ts && tsx tests/phase7a.test.ts && tsx tests/phase8a.test.ts && tsx tests/phase8b.test.ts && tsx tests/phase9.test.ts && tsx tests/phase10.test.ts && tsx tests/phase12a.test.ts && tsx tests/phase12b.test.ts && tsx tests/phase13.test.ts && tsx tests/phase14.test.ts"
+    "test": "tsx tests/phase5a.test.ts && tsx tests/phase5c.test.ts && tsx tests/fyersProvider.test.ts && tsx tests/phase6.test.ts && tsx tests/phase7a.test.ts && tsx tests/phase8a.test.ts && tsx tests/phase8b.test.ts && tsx tests/phase9.test.ts && tsx tests/phase10.test.ts && tsx tests/phase12a.test.ts && tsx tests/phase12b.test.ts && tsx tests/phase13.test.ts && tsx tests/phase14.test.ts && tsx tests/phase15.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/pg": "^8.23.1",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "pdf-parse": "^2.4.5",
+    "pg": "^8.23.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "vite": "^6.2.3"

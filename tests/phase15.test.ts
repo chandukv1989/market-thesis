@@ -163,7 +163,7 @@ async function runTests() {
   for (const dimKey of expectedDimensions) {
     const dim = evalRun1.dimensionAssessments[dimKey as any];
     assert(dim !== undefined, `Dimension '${dimKey}' exists in assessment output`);
-    assert(dim.score >= 0 && dim.score <= 1.0, `Dimension '${dimKey}' score ${dim.score} is bounded in [0, 1]`);
+    assert(dim.score >= -1.0 && dim.score <= 1.0, `Dimension '${dimKey}' score ${dim.score} is bounded in [-1, 1]`);
     assert(dim.weight > 0 && dim.weight <= 1.0, `Dimension '${dimKey}' has positive weighting ${dim.weight}`);
     assert(dim.rationale.length > 10, `Dimension '${dimKey}' provides descriptive rationale`);
     assert(!!dim.dataStatus, `Dimension '${dimKey}' declares epistemic data status: ${dim.dataStatus}`);
@@ -302,7 +302,7 @@ async function runTests() {
   });
   assert(pitAssessment.asOfDate === historicalDate, `Assessment honors requested historical asOfDate: ${historicalDate}`);
   assert(pitAssessment.canonicalSecurity.ticker === 'NVDA', 'Assessment resolves canonical security');
-  assert(pitAssessment.compositeScore >= 0 && pitAssessment.compositeScore <= 1.0, 'Historical assessment composite score is valid');
+  assert(pitAssessment.compositeScore >= -1.0 && pitAssessment.compositeScore <= 1.0, 'Historical assessment composite score is valid');
 
   // -------------------------------------------------------------
   // 8. SECURITY COMPARISON ENGINE

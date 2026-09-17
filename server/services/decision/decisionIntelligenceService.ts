@@ -268,10 +268,11 @@ export class DecisionIntelligenceService {
     try {
       const finData = await financialDataService.getSecurityFinancials(security.ticker);
       if (finData && finData.facts && finData.facts.length > 0) {
-        // Filter facts PIT <= asOfDate
+        // Filter facts PIT <= asOfDate (strictly enforce publication/filing date; reject undated facts)
         const pitFacts = finData.facts.filter(f => {
-          const factDate = f.filedDate || f.periodEnd;
-          return factDate ? factDate <= asOfDate : true;
+          const effectiveDate = f.filedDate || f.periodEnd;
+          if (!effectiveDate) return false;
+          return effectiveDate <= asOfDate;
         });
 
         const revFacts = pitFacts.filter(f => f.metric.toLowerCase().includes('revenue') || f.metric.toLowerCase().includes('sales'));

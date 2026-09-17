@@ -124,6 +124,8 @@ export class PersistenceManager {
   public getAlertRepository() { return this.getAdapter().getAlertRepository(); }
   public getPortfolioRepository() { return this.getAdapter().getPortfolioRepository(); }
   public getQueryRepository() { return this.getAdapter().getQueryRepository(); }
+  public getUserRepository() { return this.getAdapter().getUserRepository(); }
+  public getSessionRepository() { return this.getAdapter().getSessionRepository(); }
   public runTransaction<T>(work: () => Promise<T>): Promise<T> {
     return this.getAdapter().runTransaction(work);
   }

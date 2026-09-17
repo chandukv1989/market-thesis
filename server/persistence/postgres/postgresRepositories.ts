@@ -18,7 +18,9 @@ import {
   IWatchlistRepository,
   IAlertRepository,
   IPortfolioRepository,
-  IResearchQueryRepository
+  IResearchQueryRepository,
+  IUserRepository,
+  ISessionRepository
 } from '../types';
 import {
   CanonicalSecurity,
@@ -33,7 +35,9 @@ import {
   AlertItem,
   HoldingPosition,
   ResearchQueryItem,
-  DocumentProcessingStatus
+  DocumentProcessingStatus,
+  User,
+  AuthenticatedSession
 } from '../../../src/types';
 
 // ==========================================
@@ -1228,3 +1232,156 @@ export class PostgresResearchQueryRepository implements IResearchQueryRepository
     };
   }
 }
+
+// ==========================================
+// 13. USER REPOSITORY
+// ==========================================
+export class PostgresUserRepository implements IUserRepository {
+  constructor(private client: PostgresClient) {}
+
+  public async get(userId: string): Promise<User | null> {
+    const res = await this.client.query('SELECT * FROM users WHERE user_id = $1 LIMIT 1;', [userId]);
+    if (res.rows.length === 0) return null;
+    return this.mapRowToUser(res.rows[0]);
+  }
+
+  public async getByEmail(normalizedEmail: string): Promise<User | null> {
+    const res = await this.client.query('SELECT * FROM users WHERE normalized_email = $1 LIMIT 1;', [normalizedEmail.toLowerCase()]);
+    if (res.rows.length === 0) return null;
+    return this.mapRowToUser(res.rows[0]);
+  }
+
+  public async save(user: User): Promise<User> {
+    const sql = `
+      INSERT INTO users (user_id, email, normalized_email, password_hash, status, created_at, updated_at, last_login_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (user_id) DO UPDATE SET
+        email = EXCLUDED.email,
+        normalized_email = EXCLUDED.normalized_email,
+        password_hash = EXCLUDED.password_hash,
+        status = EXCLUDED.status,
+        updated_at = EXCLUDED.updated_at,
+        last_login_at = EXCLUDED.last_login_at
+      RETURNING *;
+    `;
+    const params = [
+      user.userId,
+      user.email,
+      user.normalizedEmail,
+      user.passwordHash,
+      user.status,
+      user.createdAt,
+      user.updatedAt,
+      user.lastLoginAt
+    ];
+    const res = await this.client.query(sql, params);
+    return this.mapRowToUser(res.rows[0]);
+  }
+
+  public async update(userId: string, updates: Partial<User>): Promise<boolean> {
+    const existing = await this.get(userId);
+    if (!existing) return false;
+    const merged: User = { ...existing, ...updates, updatedAt: new Date().toISOString() };
+    await this.save(merged);
+    return true;
+  }
+
+  public async count(): Promise<number> {
+    const res = await this.client.query('SELECT COUNT(*) AS total FROM users;');
+    return Number(res.rows[0]?.total || 0);
+  }
+
+  public async getAll(): Promise<User[]> {
+    const res = await this.client.query('SELECT * FROM users ORDER BY created_at DESC;');
+    return res.rows.map(r => this.mapRowToUser(r));
+  }
+
+  private mapRowToUser(row: any): User {
+    return {
+      userId: row.user_id,
+      email: row.email,
+      normalizedEmail: row.normalized_email,
+      passwordHash: row.password_hash,
+      status: row.status,
+      createdAt: new Date(row.created_at).toISOString(),
+      updatedAt: new Date(row.updated_at).toISOString(),
+      lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : null
+    };
+  }
+}
+
+// ==========================================
+// 14. SESSION REPOSITORY
+// ==========================================
+export class PostgresSessionRepository implements ISessionRepository {
+  constructor(private client: PostgresClient) {}
+
+  public async get(sessionId: string): Promise<AuthenticatedSession | null> {
+    const res = await this.client.query('SELECT * FROM user_sessions WHERE session_id = $1 AND is_valid = true AND expires_at > NOW() LIMIT 1;', [sessionId]);
+    if (res.rows.length === 0) return null;
+    return this.mapRowToSession(res.rows[0]);
+  }
+
+  public async save(session: AuthenticatedSession): Promise<AuthenticatedSession> {
+    const sql = `
+      INSERT INTO user_sessions (session_id, user_id, created_at, expires_at, last_activity_at, ip_address, user_agent, is_valid)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (session_id) DO UPDATE SET
+        expires_at = EXCLUDED.expires_at,
+        last_activity_at = EXCLUDED.last_activity_at,
+        is_valid = EXCLUDED.is_valid
+      RETURNING *;
+    `;
+    const params = [
+      session.sessionId,
+      session.userId,
+      session.createdAt,
+      session.expiresAt,
+      session.lastActivityAt,
+      session.ipAddress || null,
+      session.userAgent || null,
+      session.isValid
+    ];
+    const res = await this.client.query(sql, params);
+    return this.mapRowToSession(res.rows[0]);
+  }
+
+  public async invalidate(sessionId: string): Promise<boolean> {
+    const res = await this.client.query('UPDATE user_sessions SET is_valid = false WHERE session_id = $1;', [sessionId]);
+    return (res.rowCount || 0) > 0;
+  }
+
+  public async invalidateAllForUser(userId: string): Promise<number> {
+    const res = await this.client.query('UPDATE user_sessions SET is_valid = false WHERE user_id = $1 AND is_valid = true;', [userId]);
+    return res.rowCount || 0;
+  }
+
+  public async cleanupExpired(): Promise<number> {
+    const res = await this.client.query('DELETE FROM user_sessions WHERE is_valid = false OR expires_at <= NOW();');
+    return res.rowCount || 0;
+  }
+
+  public async count(): Promise<number> {
+    const res = await this.client.query('SELECT COUNT(*) AS total FROM user_sessions WHERE is_valid = true AND expires_at > NOW();');
+    return Number(res.rows[0]?.total || 0);
+  }
+
+  public async getAll(): Promise<AuthenticatedSession[]> {
+    const res = await this.client.query('SELECT * FROM user_sessions ORDER BY created_at DESC;');
+    return res.rows.map(r => this.mapRowToSession(r));
+  }
+
+  private mapRowToSession(row: any): AuthenticatedSession {
+    return {
+      sessionId: row.session_id,
+      userId: row.user_id,
+      createdAt: new Date(row.created_at).toISOString(),
+      expiresAt: new Date(row.expires_at).toISOString(),
+      lastActivityAt: new Date(row.last_activity_at).toISOString(),
+      ipAddress: row.ip_address || undefined,
+      userAgent: row.user_agent || undefined,
+      isValid: Boolean(row.is_valid)
+    };
+  }
+}
+

@@ -24,10 +24,104 @@ import { documentRegistry } from './server/services/documents/documentRegistry';
 import { decisionIntelligenceService } from './server/services/decision/decisionIntelligenceService';
 import { persistenceManager } from './server/persistence/persistenceManager';
 import { SecurityIdentifier, ResearchAnalysisType, ResearchRequest, EvidenceSourceType, EvidenceEpistemicStatus, ResearchEvidenceItem, MarketDataRequest } from './src/types';
+import { authService, AuthenticationError } from './server/auth/authService';
+import { resolveUser, requireAuth, setSessionCookie, clearSessionCookie } from './server/auth/authMiddleware';
+import { authorizationService, AuthorizationError } from './server/auth/authorizationService';
+import { requestCorrelation } from './server/middleware/requestCorrelation';
+import { structuredLogger } from './server/logging/structuredLogger';
+import { authRateLimiter, researchRateLimiter, backtestRateLimiter, documentUploadRateLimiter } from './server/middleware/rateLimiter';
+import { errorHandler } from './server/middleware/errorHandler';
+import { finmagineProvider } from './server/providers/finmagineProvider';
+import { environmentConfigService } from './server/config/environmentConfig';
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Phase 18: Security Headers & Correlation
+  app.use(requestCorrelation);
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
+  });
+
+  // Phase 19: Explicit CORS Origin Control
+  const allowedOrigins = [
+    process.env.APP_URL,
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ].filter(Boolean) as string[];
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      const isAllowed =
+        process.env.NODE_ENV !== 'production' ||
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.run.app') ||
+        origin.includes('localhost');
+
+      if (isAllowed) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Id, X-Request-Id, X-CSRF-Token');
+      }
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
+  // Phase 19: CSRF Protection for state-changing requests using cookie authentication
+  app.use((req, res, next) => {
+    const stateChangingMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+    if (stateChangingMethods.includes(req.method) && req.headers['cookie']?.includes('session_id=')) {
+      const hasAuthHeader = Boolean(req.headers['authorization'] || req.headers['x-session-id'] || req.headers['x-csrf-token']);
+      const secFetchSite = req.headers['sec-fetch-site'];
+      const isSameSite = secFetchSite === 'same-origin' || secFetchSite === 'same-site' || secFetchSite === 'none';
+      const origin = req.headers['origin'] || req.headers['referer'];
+      const isTrustedOrigin = origin && (allowedOrigins.some(o => origin.startsWith(o)) || origin.includes('.run.app') || origin.includes('localhost'));
+
+      if (process.env.NODE_ENV === 'production' && !hasAuthHeader && !isSameSite && !isTrustedOrigin) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'Cross-Site Request Forgery (CSRF) validation failed. State-changing requests require explicit origin verification or custom authentication headers.',
+            requestId: req.requestId,
+            timestamp: new Date().toISOString()
+          }
+        });
+        return;
+      }
+    }
+    next();
+  });
+
+  // Phase 18: Structured Request Logging
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const latencyMs = Date.now() - start;
+      if (req.originalUrl?.startsWith('/api')) {
+        structuredLogger.info('HTTP Request', {
+          requestId: req.requestId,
+          endpoint: req.originalUrl,
+          method: req.method,
+          statusCode: res.statusCode,
+          latencyMs,
+          userId: (req as any).user?.userId
+        });
+      }
+    });
+    next();
+  });
 
   // ==========================================
   // PHASE 16: PERSISTENCE INITIALIZATION & HYDRATION
@@ -46,6 +140,102 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use(resolveUser);
+
+  // Phase 18: Rate Limiting on sensitive and resource-intensive endpoints
+  app.use('/api/auth', authRateLimiter.middleware());
+  app.use('/api/research', researchRateLimiter.middleware());
+  app.use('/api/backtests', backtestRateLimiter.middleware());
+  app.use('/api/documents/upload', documentUploadRateLimiter.middleware());
+
+  // ==========================================
+  // PHASE 17: AUTHENTICATION & IDENTITY ROUTES
+  // ==========================================
+
+  // Register a new user
+  app.post('/api/auth/register', async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+      const result = await authService.register(
+        { email, password },
+        req.ip,
+        req.headers['user-agent']
+      );
+      setSessionCookie(res, result.session.sessionId, result.session.expiresAt);
+      res.status(201).json({
+        authenticated: true,
+        user: result.user,
+        session: {
+          sessionId: result.session.sessionId,
+          expiresAt: result.session.expiresAt
+        }
+      });
+    } catch (err: unknown) {
+      if (err instanceof AuthenticationError) {
+        res.status(err.statusCode).json({ error: err.message });
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: msg });
+      }
+    }
+  });
+
+  // Login existing user
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+      const result = await authService.login(
+        { email, password },
+        req.ip,
+        req.headers['user-agent']
+      );
+      setSessionCookie(res, result.session.sessionId, result.session.expiresAt);
+      res.json({
+        authenticated: true,
+        user: result.user,
+        session: {
+          sessionId: result.session.sessionId,
+          expiresAt: result.session.expiresAt
+        }
+      });
+    } catch (err: unknown) {
+      if (err instanceof AuthenticationError) {
+        res.status(err.statusCode).json({ error: err.message });
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: msg });
+      }
+    }
+  });
+
+  // Logout current session
+  app.post('/api/auth/logout', async (req, res) => {
+    try {
+      if (req.session?.sessionId) {
+        await authService.logout(req.session.sessionId);
+      }
+      clearSessionCookie(res);
+      res.json({ authenticated: false, message: 'Logged out successfully' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // Get current authenticated user profile
+  app.get('/api/auth/me', (req, res) => {
+    if (req.user) {
+      res.json({
+        authenticated: true,
+        user: req.user
+      });
+    } else {
+      res.json({
+        authenticated: false,
+        user: null
+      });
+    }
+  });
 
   // ==========================================
   // FINANCIAL DATA PROVIDER API ROUTES
@@ -215,6 +405,28 @@ async function startServer() {
     }
   });
 
+  // Phase 18: Finmagine Provider Health Status (Server-side metadata, never leaks secrets)
+  app.get('/api/finmagine/status', (_req, res) => {
+    try {
+      const status = finmagineProvider.getHealthStatus();
+      res.json(status);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // Phase 18: Safe Production Environment Diagnostics (Never leaks secrets)
+  app.get('/api/config/status', (_req, res) => {
+    try {
+      const summary = environmentConfigService.getSafeSummary();
+      res.json(summary);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
   // Market Historical Prices endpoint (OHLCV)
   app.get('/api/market/history/:ticker', async (req, res) => {
     try {
@@ -289,7 +501,8 @@ async function startServer() {
         documentType,
         epistemicStatus,
         asOfDate,
-        limit
+        limit,
+        userId: req.user?.userId
       });
 
       res.json(retrievalResult);
@@ -323,9 +536,16 @@ async function startServer() {
         limit
       };
 
-      const evidence = asOfDate
+      const rawEvidence = asOfDate
         ? repo.getEvidenceAvailableAsOf(asOfDate, filter)
         : repo.queryEvidence(filter);
+
+      // Scope to public or caller-owned items
+      const evidence = rawEvidence.filter(item => {
+        const itemOwner = item.ownerUserId || (item as any).userId;
+        if (!itemOwner) return true; // public
+        return req.user?.userId && itemOwner === req.user.userId;
+      });
 
       res.json({
         evidence,
@@ -386,7 +606,8 @@ async function startServer() {
       const targetSecIds = resolvedSecurities.map(s => s.id || s.symbol);
       const retrievalResult = await retrievalEngine.retrieve({
         query: query.trim(),
-        securityIds: targetSecIds.length > 0 ? targetSecIds : undefined
+        securityIds: targetSecIds.length > 0 ? targetSecIds : undefined,
+        userId: req.user?.userId
       });
 
       // Map retrievalBundle to ResearchEvidenceItem
@@ -454,9 +675,14 @@ async function startServer() {
   // ==========================================
 
   // List all active research notebooks
-  app.get('/api/research/notebooks', (_req, res) => {
+  app.get('/api/research/notebooks', (req, res) => {
     try {
-      const list = researchNotebookService.listNotebooks();
+      let list = researchNotebookService.listNotebooks();
+      if (req.user?.userId) {
+        list = list.filter(n => !n.ownerUserId || n.ownerUserId === req.user?.userId);
+      } else {
+        list = list.filter(n => !n.ownerUserId);
+      }
       res.json({ notebooks: list, count: list.length });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -538,7 +764,7 @@ async function startServer() {
   });
 
   // Get a single research snapshot by ID
-  app.get('/api/research/snapshot/:snapshotId', (req, res) => {
+  app.get('/api/research/snapshot/:snapshotId', async (req, res) => {
     try {
       const { snapshotId } = req.params;
       const snapshot = researchNotebookService.getSnapshot(snapshotId);
@@ -546,10 +772,15 @@ async function startServer() {
         res.status(404).json({ error: `Snapshot ${snapshotId} not found.` });
         return;
       }
+      await authorizationService.authorizeSnapshot(snapshotId, req.user?.userId || '');
       res.json(snapshot);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -560,7 +791,13 @@ async function startServer() {
   // Ingest & parse uploaded document
   app.post('/api/documents/upload', async (req, res) => {
     try {
-      const result = await documentIngestionService.ingestDocument(req.body);
+      const payload = {
+        ...req.body,
+        ownerUserId: req.user?.userId || undefined,
+        userId: req.user?.userId || undefined,
+        uploadedBy: req.user?.email || 'system'
+      };
+      const result = await documentIngestionService.ingestDocument(payload);
       res.status(200).json(result);
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -594,9 +831,10 @@ async function startServer() {
   app.get('/api/documents', (req, res) => {
     try {
       const { securityId } = req.query;
+      const userId = req.user?.userId;
       const docs = securityId
-        ? documentRegistry.getDocumentsBySecurity(String(securityId))
-        : documentRegistry.getAllDocuments();
+        ? documentRegistry.getDocumentsBySecurity(String(securityId), userId)
+        : documentRegistry.getAllDocuments(userId);
       res.json({ documents: docs, count: docs.length });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -605,7 +843,7 @@ async function startServer() {
   });
 
   // Get single document by ID
-  app.get('/api/documents/:documentId', (req, res) => {
+  app.get('/api/documents/:documentId', async (req, res) => {
     try {
       const { documentId } = req.params;
       const doc = documentRegistry.getDocument(documentId);
@@ -613,17 +851,23 @@ async function startServer() {
         res.status(404).json({ error: `Document ${documentId} not found.` });
         return;
       }
+      await authorizationService.authorizeDocument(documentId, req.user?.userId || '');
       res.json(doc);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
   // Delete document and purge its evidence from repository
-  app.delete('/api/documents/:documentId', (req, res) => {
+  app.delete('/api/documents/:documentId', async (req, res) => {
     try {
       const { documentId } = req.params;
+      await authorizationService.authorizeDocument(documentId, req.user?.userId || '');
       const success = documentIngestionService.deleteDocument(documentId);
       if (!success) {
         res.status(404).json({ error: `Document ${documentId} not found.` });
@@ -631,8 +875,12 @@ async function startServer() {
       }
       res.json({ success: true, deletedDocumentId: documentId });
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -702,9 +950,9 @@ async function startServer() {
   // ==========================================
 
   // Watchlist endpoints
-  app.get('/api/watchlist', (_req, res) => {
+  app.get('/api/watchlist', (req, res) => {
     try {
-      const items = watchlistAlertService.getWatchlist();
+      const items = watchlistAlertService.getWatchlist(req.user?.userId);
       res.json({ watchlist: items, count: items.length, timestamp: new Date().toISOString() });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -719,7 +967,15 @@ async function startServer() {
         res.status(400).json({ error: 'Symbol is required' });
         return;
       }
-      const item = watchlistAlertService.addWatchlistItem({ symbol, securityId, market, exchange, currency, notes });
+      const item = watchlistAlertService.addWatchlistItem({
+        symbol,
+        securityId,
+        market,
+        exchange,
+        currency,
+        notes,
+        ownerUserId: req.user?.userId
+      });
       res.status(201).json(item);
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -727,9 +983,10 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/watchlist/:id', (req, res) => {
+  app.delete('/api/watchlist/:id', async (req, res) => {
     try {
       const id = req.params.id;
+      await authorizationService.authorizeWatchlistItem(id, req.user?.userId || '');
       const success = watchlistAlertService.removeWatchlistItem(id);
       if (!success) {
         res.status(404).json({ error: `Watchlist item ${id} not found` });
@@ -737,14 +994,19 @@ async function startServer() {
       }
       res.json({ success: true, message: `Watchlist item ${id} removed` });
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
-  app.patch('/api/watchlist/:id', (req, res) => {
+  app.patch('/api/watchlist/:id', async (req, res) => {
     try {
       const id = req.params.id;
+      await authorizationService.authorizeWatchlistItem(id, req.user?.userId || '');
       const { enabled } = req.body || {};
       const updated = watchlistAlertService.toggleWatchlistItem(id, enabled);
       if (!updated) {
@@ -753,8 +1015,12 @@ async function startServer() {
       }
       res.json(updated);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -765,7 +1031,8 @@ async function startServer() {
       const symbol = req.query.symbol as string | undefined;
       const enabled = req.query.enabled !== undefined ? req.query.enabled === 'true' : undefined;
       const alertType = req.query.alertType as any;
-      const rules = watchlistAlertService.getAlertRules({ securityId, symbol, enabled, alertType });
+      const userId = req.user?.userId;
+      const rules = watchlistAlertService.getAlertRules({ securityId, symbol, enabled, alertType, userId });
       res.json({ rules, count: rules.length });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -790,7 +1057,8 @@ async function startServer() {
         priority,
         cooldownMinutes,
         enabled,
-        metadata
+        metadata,
+        ownerUserId: req.user?.userId
       });
       res.status(201).json(rule);
     } catch (error: unknown) {
@@ -799,9 +1067,12 @@ async function startServer() {
     }
   });
 
-  app.patch('/api/alerts/rules/:id', (req, res) => {
+  app.patch('/api/alerts/rules/:id', async (req, res) => {
     try {
       const id = req.params.id;
+      if (req.user?.userId) {
+        await authorizationService.authorizeAlertRule(id, req.user.userId);
+      }
       const updated = watchlistAlertService.updateAlertRule(id, req.body || {});
       if (!updated) {
         res.status(404).json({ error: `Alert rule ${id} not found` });
@@ -809,14 +1080,19 @@ async function startServer() {
       }
       res.json(updated);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
-  app.delete('/api/alerts/rules/:id', (req, res) => {
+  app.delete('/api/alerts/rules/:id', async (req, res) => {
     try {
       const id = req.params.id;
+      await authorizationService.authorizeAlertRule(id, req.user?.userId || '');
       const success = watchlistAlertService.deleteAlertRule(id);
       if (!success) {
         res.status(404).json({ error: `Alert rule ${id} not found` });
@@ -824,8 +1100,12 @@ async function startServer() {
       }
       res.json({ success: true, message: `Alert rule ${id} deleted` });
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -836,7 +1116,8 @@ async function startServer() {
       const priority = req.query.priority as any;
       const securityId = req.query.securityId as string | undefined;
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-      const events = watchlistAlertService.getAlertEvents({ isRead, priority, securityId, limit });
+      const userId = req.user?.userId;
+      const events = watchlistAlertService.getAlertEvents({ isRead, priority, securityId, limit, userId });
       res.json({ events, count: events.length });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -866,9 +1147,12 @@ async function startServer() {
     }
   });
 
-  app.post('/api/alerts/:id/read', (req, res) => {
+  app.post('/api/alerts/:id/read', async (req, res) => {
     try {
       const eventId = req.params.id;
+      if (req.user?.userId) {
+        await authorizationService.authorizeAlertEvent(eventId, req.user.userId);
+      }
       const event = watchlistAlertService.markAlertRead(eventId);
       if (!event) {
         res.status(404).json({ error: `Alert event ${eventId} not found` });
@@ -876,14 +1160,21 @@ async function startServer() {
       }
       res.json(event);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
-  app.post('/api/alerts/:id/acknowledge', (req, res) => {
+  app.post('/api/alerts/:id/acknowledge', async (req, res) => {
     try {
       const eventId = req.params.id;
+      if (req.user?.userId) {
+        await authorizationService.authorizeAlertEvent(eventId, req.user.userId);
+      }
       const event = watchlistAlertService.acknowledgeAlert(eventId);
       if (!event) {
         res.status(404).json({ error: `Alert event ${eventId} not found` });
@@ -891,8 +1182,12 @@ async function startServer() {
       }
       res.json(event);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -917,9 +1212,10 @@ async function startServer() {
   });
 
   // Get details for a specific strategy
-  app.get('/api/strategies/:id', (req, res) => {
+  app.get('/api/strategies/:id', async (req, res) => {
     try {
       const strategyId = req.params.id;
+      await authorizationService.authorizeStrategy(strategyId, req.user?.userId || '');
       const strategy = quantStrategyEngine.getStrategy(strategyId);
       if (!strategy) {
         res.status(404).json({ error: `Strategy '${strategyId}' not found` });
@@ -927,8 +1223,12 @@ async function startServer() {
       }
       res.json(strategy);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -968,7 +1268,11 @@ async function startServer() {
   // Register a custom quantitative strategy
   app.post('/api/strategies/custom', (req, res) => {
     try {
-      const strategy = req.body;
+      const strategy = {
+        ...req.body,
+        ownerUserId: req.user?.userId || undefined,
+        userId: req.user?.userId || undefined
+      };
       const result = quantStrategyEngine.registerCustomStrategy(strategy);
       if (!result.valid) {
         res.status(400).json({ error: 'Validation failed', errors: result.errors });
@@ -989,6 +1293,9 @@ async function startServer() {
   app.post('/api/backtests/run', async (req, res) => {
     try {
       const config = req.body.config || req.body;
+      if (config && req.user?.userId) {
+        config.ownerUserId = req.user.userId;
+      }
       const result = await backtestService.runBacktest(config);
       res.json({
         success: result.status === 'COMPLETED',
@@ -1014,9 +1321,10 @@ async function startServer() {
   });
 
   // Retrieve a backtest result by ID
-  app.get('/api/backtests/:id', (req, res) => {
+  app.get('/api/backtests/:id', async (req, res) => {
     try {
       const { id } = req.params;
+      await authorizationService.authorizeBacktest(id, req.user?.userId || '');
       const result = backtestService.getBacktest(id);
       if (!result) {
         res.status(404).json({ error: `Backtest with ID '${id}' not found` });
@@ -1024,15 +1332,24 @@ async function startServer() {
       }
       res.json(result);
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
   // Retrieve all cached backtest results
-  app.get('/api/backtests', (_req, res) => {
+  app.get('/api/backtests', (req, res) => {
     try {
-      const backtests = backtestService.getAllBacktests();
+      let backtests = backtestService.getAllBacktests();
+      if (req.user?.userId) {
+        backtests = backtests.filter(b => !b.ownerUserId || b.ownerUserId === req.user?.userId);
+      } else {
+        backtests = backtests.filter(b => !b.ownerUserId);
+      }
       res.json({ backtests, count: backtests.length });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -1041,9 +1358,10 @@ async function startServer() {
   });
 
   // Retrieve comprehensive backtest report by ID
-  app.get('/api/backtests/:id/report', (req, res) => {
+  app.get('/api/backtests/:id/report', async (req, res) => {
     try {
       const { id } = req.params;
+      await authorizationService.authorizeBacktest(id, req.user?.userId || '');
       const result = backtestService.getBacktest(id);
       if (!result) {
         res.status(404).json({ error: `Backtest with ID '${id}' not found` });
@@ -1051,8 +1369,12 @@ async function startServer() {
       }
       res.json(result.report || { error: 'Report not generated for backtest' });
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
+      if (error instanceof AuthorizationError) {
+        res.status(error.statusCode).json({ error: error.message });
+      } else {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: errMsg });
+      }
     }
   });
 
@@ -1202,6 +1524,11 @@ async function startServer() {
   });
 
   // ==========================================
+  // PHASE 18: STRUCTURED ERROR HANDLING MIDDLEWARE
+  // ==========================================
+  app.use('/api', errorHandler);
+
+  // ==========================================
   // VITE DEV & PRODUCTION MIDDLEWARE
   // ==========================================
   if (process.env.NODE_ENV !== 'production') {
@@ -1218,9 +1545,33 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Investment Intelligence] Full-stack server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Phase 19: Graceful Shutdown
+  const gracefulShutdown = async (signal: string) => {
+    structuredLogger.info(`Received ${signal}. Initiating graceful shutdown...`);
+    server.close(async () => {
+      try {
+        await persistenceManager.shutdown();
+        structuredLogger.info('Persistence shutdown complete. Process exiting cleanly.');
+        process.exit(0);
+      } catch (err) {
+        structuredLogger.error('Error during graceful shutdown', { errorCategory: 'SHUTDOWN_ERROR', metadata: { error: String(err) } });
+        process.exit(1);
+      }
+    });
+
+    // Hard fallback timeout
+    setTimeout(() => {
+      structuredLogger.error('Graceful shutdown timed out. Forcing process exit.');
+      process.exit(1);
+    }, 10000).unref();
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 startServer();

@@ -26,7 +26,9 @@ import {
   IWatchlistRepository,
   IAlertRepository,
   IPortfolioRepository,
-  IResearchQueryRepository
+  IResearchQueryRepository,
+  IUserRepository,
+  ISessionRepository
 } from '../types';
 import {
   CanonicalSecurity,
@@ -44,7 +46,9 @@ import {
   DocumentProcessingStatus,
   PersistenceStatusResponse,
   PersistenceStatusCode,
-  PersistenceProviderType
+  PersistenceProviderType,
+  User,
+  AuthenticatedSession
 } from '../../../src/types';
 
 interface PersistentStoreState {
@@ -62,6 +66,8 @@ interface PersistentStoreState {
   alerts: Record<string, AlertItem>;
   portfolio: Record<string, HoldingPosition[]>;
   queries: Record<string, ResearchQueryItem>;
+  users: Record<string, User>;
+  sessions: Record<string, AuthenticatedSession>;
 }
 
 export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
@@ -85,6 +91,8 @@ export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
   private alertRepo: IAlertRepository;
   private portfolioRepo: IPortfolioRepository;
   private queryRepo: IResearchQueryRepository;
+  private userRepo: IUserRepository;
+  private sessionRepo: ISessionRepository;
 
   constructor(customStorageDir?: string) {
     this.storageDir = customStorageDir || path.resolve(process.cwd(), 'data', 'persistence');
@@ -105,6 +113,8 @@ export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
     this.alertRepo = this.createAlertRepo();
     this.portfolioRepo = this.createPortfolioRepo();
     this.queryRepo = this.createQueryRepo();
+    this.userRepo = this.createUserRepo();
+    this.sessionRepo = this.createSessionRepo();
   }
 
   private createEmptyState(): PersistentStoreState {
@@ -122,7 +132,9 @@ export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
       watchlists: { default: [] },
       alerts: {},
       portfolio: { default: [] },
-      queries: {}
+      queries: {},
+      users: {},
+      sessions: {}
     };
   }
 
@@ -198,6 +210,8 @@ export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
   public getAlertRepository(): IAlertRepository { return this.alertRepo; }
   public getPortfolioRepository(): IPortfolioRepository { return this.portfolioRepo; }
   public getQueryRepository(): IResearchQueryRepository { return this.queryRepo; }
+  public getUserRepository(): IUserRepository { return this.userRepo; }
+  public getSessionRepository(): ISessionRepository { return this.sessionRepo; }
 
   public async getStatus(): Promise<PersistenceStatusResponse> {
     return {
@@ -405,12 +419,12 @@ export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
         if (asOfDate) {
           decs = decs.filter(d => d.asOfDate <= asOfDate);
         }
-        decs.sort((a, b) => b.asOfDate.localeCompare(a.asOfDate) || b.generatedAt.localeCompare(a.generatedAt));
+        decs.sort((a, b) => (b.asOfDate || '').localeCompare(a.asOfDate || '') || (b.generatedAt || '').localeCompare(a.generatedAt || ''));
         return decs[0] || null;
       },
       getHistory: async (securityId: string) => {
         const decs = Object.values(this.state.decisions).filter(d => d.securityId === securityId);
-        decs.sort((a, b) => b.asOfDate.localeCompare(a.asOfDate) || b.generatedAt.localeCompare(a.generatedAt));
+        decs.sort((a, b) => (b.asOfDate || '').localeCompare(a.asOfDate || '') || (b.generatedAt || '').localeCompare(a.generatedAt || ''));
         return decs;
       },
       save: async (decision: InvestmentDecisionAssessment) => {
@@ -540,6 +554,85 @@ export class DevelopmentPersistenceAdapter implements IPersistenceAdapter {
         return this.state.queries[id];
       },
       count: async () => Object.keys(this.state.queries).length
+    };
+  }
+
+  private createUserRepo(): IUserRepository {
+    return {
+      get: async (id: string) => this.state.users[id] || null,
+      getByEmail: async (email: string) => {
+        const norm = email.trim().toLowerCase();
+        return Object.values(this.state.users).find(u => u.normalizedEmail === norm) || null;
+      },
+      save: async (user: User) => {
+        this.state.users[user.userId] = { ...user };
+        this.flushToDisk();
+        return this.state.users[user.userId];
+      },
+      update: async (userId: string, updates: Partial<User>) => {
+        if (!this.state.users[userId]) return false;
+        this.state.users[userId] = {
+          ...this.state.users[userId],
+          ...updates,
+          updatedAt: new Date().toISOString()
+        };
+        this.flushToDisk();
+        return true;
+      },
+      count: async () => Object.keys(this.state.users).length,
+      getAll: async () => Object.values(this.state.users)
+    };
+  }
+
+  private createSessionRepo(): ISessionRepository {
+    return {
+      get: async (sessionId: string) => {
+        const sess = this.state.sessions[sessionId];
+        if (!sess) return null;
+        if (!sess.isValid) return null;
+        if (new Date(sess.expiresAt).getTime() <= Date.now()) {
+          sess.isValid = false;
+          this.flushToDisk();
+          return null;
+        }
+        return sess;
+      },
+      save: async (session: AuthenticatedSession) => {
+        this.state.sessions[session.sessionId] = { ...session };
+        this.flushToDisk();
+        return this.state.sessions[session.sessionId];
+      },
+      invalidate: async (sessionId: string) => {
+        if (!this.state.sessions[sessionId]) return false;
+        this.state.sessions[sessionId].isValid = false;
+        this.flushToDisk();
+        return true;
+      },
+      invalidateAllForUser: async (userId: string) => {
+        let count = 0;
+        for (const s of Object.values(this.state.sessions)) {
+          if (s.userId === userId && s.isValid) {
+            s.isValid = false;
+            count++;
+          }
+        }
+        if (count > 0) this.flushToDisk();
+        return count;
+      },
+      cleanupExpired: async () => {
+        const now = Date.now();
+        let count = 0;
+        for (const [id, s] of Object.entries(this.state.sessions)) {
+          if (!s.isValid || new Date(s.expiresAt).getTime() <= now) {
+            delete this.state.sessions[id];
+            count++;
+          }
+        }
+        if (count > 0) this.flushToDisk();
+        return count;
+      },
+      count: async () => Object.values(this.state.sessions).filter(s => s.isValid && new Date(s.expiresAt).getTime() > Date.now()).length,
+      getAll: async () => Object.values(this.state.sessions)
     };
   }
 }

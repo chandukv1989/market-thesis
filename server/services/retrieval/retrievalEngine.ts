@@ -107,7 +107,8 @@ export class RetrievalEngine implements IRetrievalEngine {
       src: query.sourceType,
       docType: query.documentType,
       asOf: query.asOfDate ? new Date(query.asOfDate).toISOString() : undefined,
-      limit: query.limit
+      limit: query.limit,
+      userId: query.userId
     });
 
     const cached = this.queryCache.get(cacheKey);
@@ -218,6 +219,21 @@ export class RetrievalEngine implements IRetrievalEngine {
       if (!isNaN(endMs)) {
         candidates = candidates.filter(item => new Date(item.publishedAt).getTime() <= endMs);
       }
+    }
+
+    // User data isolation: public evidence items (no ownerUserId) are accessible to all,
+    // while user-owned evidence items are only visible to their respective owner.
+    if (query.userId) {
+      candidates = candidates.filter(item => {
+        const itemOwner = item.ownerUserId || (item as any).userId;
+        return !itemOwner || itemOwner === query.userId;
+      });
+    } else {
+      // If query does not specify a userId, only public evidence is retrieved
+      candidates = candidates.filter(item => {
+        const itemOwner = item.ownerUserId || (item as any).userId;
+        return !itemOwner;
+      });
     }
 
     const candidatesAfterMetadataFilter = candidates.length;

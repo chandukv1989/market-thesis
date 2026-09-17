@@ -23,7 +23,9 @@ import {
   DocumentProcessingStatus,
   PersistenceStatusResponse,
   PersistenceStatusCode,
-  PersistenceProviderType
+  PersistenceProviderType,
+  User,
+  AuthenticatedSession
 } from '../../src/types';
 
 export interface ISecurityRepository {
@@ -38,7 +40,7 @@ export interface ISecurityRepository {
 export interface IResearchDocumentRepository {
   get(documentId: string): Promise<ResearchDocument | null>;
   getByHash(contentHash: string): Promise<ResearchDocument | null>;
-  getAll(filter?: { securityId?: string; documentType?: string }): Promise<ResearchDocument[]>;
+  getAll(filter?: { securityId?: string; documentType?: string; userId?: string }): Promise<ResearchDocument[]>;
   save(doc: ResearchDocument): Promise<{ saved: boolean; isDuplicate: boolean; document: ResearchDocument }>;
   updateStatus(documentId: string, status: DocumentProcessingStatus, metadata?: any): Promise<boolean>;
   count(): Promise<number>;
@@ -126,6 +128,25 @@ export interface IResearchQueryRepository {
   count(): Promise<number>;
 }
 
+export interface IUserRepository {
+  get(userId: string): Promise<User | null>;
+  getByEmail(normalizedEmail: string): Promise<User | null>;
+  save(user: User): Promise<User>;
+  update(userId: string, updates: Partial<User>): Promise<boolean>;
+  count(): Promise<number>;
+  getAll(): Promise<User[]>;
+}
+
+export interface ISessionRepository {
+  get(sessionId: string): Promise<AuthenticatedSession | null>;
+  save(session: AuthenticatedSession): Promise<AuthenticatedSession>;
+  invalidate(sessionId: string): Promise<boolean>;
+  invalidateAllForUser(userId: string): Promise<number>;
+  cleanupExpired(): Promise<number>;
+  count(): Promise<number>;
+  getAll(): Promise<AuthenticatedSession[]>;
+}
+
 export interface IPersistenceAdapter {
   readonly status: PersistenceStatusCode;
   readonly provider: PersistenceProviderType;
@@ -149,6 +170,8 @@ export interface IPersistenceAdapter {
   getAlertRepository(): IAlertRepository;
   getPortfolioRepository(): IPortfolioRepository;
   getQueryRepository(): IResearchQueryRepository;
+  getUserRepository(): IUserRepository;
+  getSessionRepository(): ISessionRepository;
 
   getStatus(): Promise<PersistenceStatusResponse>;
 }

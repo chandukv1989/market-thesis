@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/phase5a.test.ts && tsx tests/phase5c.test.ts && tsx tests/fyersProvider.test.ts && tsx tests/phase6.test.ts && tsx tests/phase7a.test.ts && tsx tests/phase8a.test.ts && tsx tests/phase8b.test.ts && tsx tests/phase9.test.ts && tsx tests/phase10.test.ts && tsx tests/phase12a.test.ts && tsx tests/phase12b.test.ts && tsx tests/phase13.test.ts && tsx tests/phase14.test.ts && tsx tests/phase15.test.ts"
+    "test": "tsx tests/phase5a.test.ts && tsx tests/phase5c.test.ts && tsx tests/fyersProvider.test.ts && tsx tests/phase6.test.ts && tsx tests/phase7a.test.ts && tsx tests/phase8a.test.ts && tsx tests/phase8b.test.ts && tsx tests/phase9.test.ts && tsx tests/phase10.test.ts && tsx tests/phase12a.test.ts && tsx tests/phase12b.test.ts && tsx tests/phase13.test.ts && tsx tests/phase14.test.ts && tsx tests/phase15.test.ts && tsx tests/phase16.test.ts && tsx tests/phase17.test.ts && tsx tests/phase18.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

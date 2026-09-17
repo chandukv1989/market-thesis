@@ -328,6 +328,8 @@ export interface BacktestResult {
   id?: string;
   backtestId?: string;
   strategyId?: string;
+  ownerUserId?: string;
+  userId?: string;
   strategyTitle?: string;
   strategyVersion?: string;
   configuration?: BacktestConfiguration;
@@ -571,6 +573,9 @@ export interface Strategy {
   positionSizing?: string;
   exitRules?: string;
   rules: StrategyRule[];
+  ownerUserId?: string;
+  userId?: string;
+  isBuiltIn?: boolean;
   lastRun?: string;
   backtestId?: string;
   quickMetrics?: {
@@ -596,6 +601,8 @@ export interface HoldingPosition {
   currency?: string; // 'USD' | 'INR'
   market?: MarketRegion; // 'US' | 'INDIA' | 'GLOBAL'
   exchange?: string;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface WatchlistItem {
@@ -638,6 +645,8 @@ export interface AlertItem {
   isRead?: boolean;
   severity: 'critical' | 'warning' | 'info' | 'HIGH' | 'MEDIUM' | 'INFO' | string;
   provenanceType: ProvenanceTag;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface ResearchQueryItem {
@@ -645,6 +654,8 @@ export interface ResearchQueryItem {
   query: string;
   date: string;
   ticker?: string;
+  ownerUserId?: string;
+  userId?: string;
   answerSummary: string;
   groundedFacts: { statement: string; tag: ProvenanceTag; sourceIndex: number }[];
   sources: {
@@ -1158,6 +1169,9 @@ export interface QuantStrategy {
   rebalanceSchedule: string;
   isDeterministic: boolean;
   backtestId?: string;
+  ownerUserId?: string;
+  userId?: string;
+  isBuiltIn?: boolean;
 }
 
 // ==========================================
@@ -1416,6 +1430,7 @@ export interface ResearchRequest {
   availableEvidence: ResearchEvidenceItem[];
   asOfDate?: string;
   researchAsOfDate?: string;
+  userId?: string;
   context?: {
     portfolioContext?: {
       holdings?: ResearchPortfolioHoldingContext[];
@@ -1452,7 +1467,8 @@ export type EvidenceSourceType =
   | 'PORTFOLIO'
   | 'CANONICAL_METADATA'
   | 'RESEARCH_DOCUMENT'
-  | 'QUANTITATIVE';
+  | 'QUANTITATIVE'
+  | 'FINMAGINE';
 
 export type EvidenceEpistemicStatus =
   | 'REAL'
@@ -1959,6 +1975,8 @@ export interface CanonicalWatchlistItem {
   notes?: string;
   alertRuleIds: string[];
   ticker?: string; // backwards compatibility alias
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface AlertRule {
@@ -1978,6 +1996,8 @@ export interface AlertRule {
   previousObservedValue?: number | string | null;
   priority: AlertPriority;
   metadata?: Record<string, unknown>;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface AlertEvaluation {
@@ -2036,6 +2056,8 @@ export interface AlertEvent {
   isRead: boolean;
   isAcknowledged: boolean;
   fingerprint: string;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface WatchlistAlertState {
@@ -2530,6 +2552,8 @@ export interface DocumentUploadRequest {
   fileContent?: string;
   documentType?: ResearchDocumentType;
   uploadedBy?: string;
+  ownerUserId?: string;
+  userId?: string;
 }
 
 export interface DocumentUploadResult {
@@ -2667,6 +2691,8 @@ export interface InvestmentDecisionAssessment {
   dimensionsList: DecisionDimensionAssessment[];
   supportingEvidenceIds: string[];
   contradictingEvidenceIds: string[];
+  ownerUserId?: string;
+  userId?: string;
   evidenceCoverage: {
     rating: 'HIGH' | 'MODERATE' | 'LIMITED' | 'INSUFFICIENT';
     totalEvidenceCount: number;
@@ -2902,6 +2928,167 @@ export interface LoginRequest {
   email: string;
   password: string;
 }
+
+// ==========================================
+// PHASE 18: FINMAGINE SUPPLEMENTAL RESEARCH PROVIDER & PRODUCTION HARDENING
+// ==========================================
+
+export type FinmagineHealthCode =
+  | 'UNCONFIGURED'
+  | 'AUTHENTICATION_REQUIRED'
+  | 'CONNECTED'
+  | 'RATE_LIMITED'
+  | 'UNAVAILABLE'
+  | 'ERROR';
+
+export interface FinmagineCapabilities {
+  companyProfile: boolean;
+  fundamentals: boolean;
+  financialRatios: boolean;
+  valuation: boolean;
+  momentum: boolean;
+  earnings: boolean;
+  screening: boolean;
+}
+
+export interface FinmagineHealthStatus {
+  provider: 'Finmagine';
+  status: FinmagineHealthCode;
+  marketCoverage: ('US' | 'INDIA')[];
+  isSimulated: boolean;
+  lastChecked: string;
+  capabilities: FinmagineCapabilities;
+  message?: string;
+}
+
+export interface FinmagineCompanyProfile {
+  symbol: string;
+  companyName: string;
+  exchange: string;
+  country: string;
+  sector?: string;
+  industry?: string;
+  description?: string;
+  marketCap?: number;
+  currency?: string;
+  employees?: number;
+  website?: string;
+  ceo?: string;
+  epistemicStatus: EvidenceEpistemicStatus;
+  isSimulated: boolean;
+  retrievedAt: string;
+  asOfDate?: string;
+}
+
+export interface FinmagineFinancialRatios {
+  symbol: string;
+  market: 'US' | 'INDIA';
+  peRatio?: number;
+  pbRatio?: number;
+  psRatio?: number;
+  evToEbitda?: number;
+  debtToEquity?: number;
+  currentRatio?: number;
+  quickRatio?: number;
+  roe?: number;
+  roa?: number;
+  grossMarginPct?: number;
+  operatingMarginPct?: number;
+  netMarginPct?: number;
+  dividendYieldPct?: number;
+  epistemicStatus: EvidenceEpistemicStatus;
+  isSimulated: boolean;
+  retrievedAt: string;
+  asOfDate?: string;
+}
+
+export interface FinmagineValuation {
+  symbol: string;
+  market: 'US' | 'INDIA';
+  valuationScore?: number;
+  dcfValue?: number;
+  discountToIntrinsicPct?: number;
+  historicalPeRange?: { min: number; max: number; median: number };
+  epistemicStatus: EvidenceEpistemicStatus;
+  isSimulated: boolean;
+  retrievedAt: string;
+  asOfDate?: string;
+}
+
+export interface FinmagineMomentum {
+  symbol: string;
+  market: 'US' | 'INDIA';
+  rsi14?: number;
+  sma50?: number;
+  sma200?: number;
+  momentumScore?: number;
+  relStrengthVsIndex?: number;
+  epistemicStatus: EvidenceEpistemicStatus;
+  isSimulated: boolean;
+  retrievedAt: string;
+  asOfDate?: string;
+}
+
+export interface FinmagineAnnualItem {
+  fiscalYear: number;
+  revenue?: number;
+  grossProfit?: number;
+  operatingIncome?: number;
+  netIncome?: number;
+  eps?: number;
+  freeCashFlow?: number;
+}
+
+export interface FinmagineQuarterlyItem {
+  period: string;
+  revenue?: number;
+  netIncome?: number;
+  eps?: number;
+}
+
+export interface FinmagineFundamentals {
+  symbol: string;
+  market: 'US' | 'INDIA';
+  annualFinancials?: FinmagineAnnualItem[];
+  quarterlyFinancials?: FinmagineQuarterlyItem[];
+  epistemicStatus: EvidenceEpistemicStatus;
+  isSimulated: boolean;
+  retrievedAt: string;
+  asOfDate?: string;
+}
+
+export interface FinmagineEarnings {
+  symbol: string;
+  market: 'US' | 'INDIA';
+  lastEarningsDate?: string;
+  nextEarningsDate?: string;
+  epsConsensus?: number;
+  epsActual?: number;
+  epsSurprisePct?: number;
+  revenueConsensus?: number;
+  revenueActual?: number;
+  epistemicStatus: EvidenceEpistemicStatus;
+  isSimulated: boolean;
+  retrievedAt: string;
+  asOfDate?: string;
+}
+
+export interface FinmagineScreenMatch {
+  symbol: string;
+  companyName: string;
+  marketCap?: number;
+  peRatio?: number;
+  sector?: string;
+}
+
+export interface FinmagineScreenResult {
+  matches: FinmagineScreenMatch[];
+  totalCount: number;
+  retrievedAt: string;
+  isSimulated: boolean;
+  epistemicStatus: EvidenceEpistemicStatus;
+}
+
 
 
 

@@ -16,7 +16,8 @@ import {
   EvidenceGatherOptions,
   ResearchEvidenceItem,
   SecurityIdentifier,
-  IEvidenceRepository
+  IEvidenceRepository,
+  EvidenceSourceType
 } from '../../../src/types';
 import { resolveSecurity } from '../../../src/data/canonicalSecurities';
 import { EvidenceRepository } from './evidenceRepository';
@@ -24,6 +25,7 @@ import { secEvidenceAdapter } from './adapters/secEvidenceAdapter';
 import { marketEvidenceAdapter } from './adapters/marketEvidenceAdapter';
 import { portfolioEvidenceAdapter } from './adapters/portfolioEvidenceAdapter';
 import { metadataEvidenceAdapter } from './adapters/metadataEvidenceAdapter';
+import { finmagineEvidenceAdapter } from './adapters/finmagineEvidenceAdapter';
 
 export class EvidenceService {
   private repository: EvidenceRepository;
@@ -96,7 +98,18 @@ export class EvidenceService {
       gatheredItems.push(...portItems);
     }
 
-    // 6. Register into EvidenceRepository (deduplicates and flags conflicts)
+    // 6. Gather Supplemental Finmagine Evidence (Research, Ratios, Valuation)
+    const asOfStr = asOfDate instanceof Date ? asOfDate.toISOString() : asOfDate;
+    for (const sec of targetSecurities) {
+      try {
+        const finmagineItems = await finmagineEvidenceAdapter.getEvidenceForSecurity(sec, asOfStr);
+        gatheredItems.push(...finmagineItems);
+      } catch (err) {
+        console.warn(`[EvidenceService] Finmagine gathering error for ${sec.symbol}:`, err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    // 7. Register into EvidenceRepository (deduplicates and flags conflicts)
     this.repository.addEvidenceBatch(gatheredItems);
 
     // 7. Point-in-time and filtered return
@@ -119,7 +132,7 @@ export class EvidenceService {
       id: item.evidenceId,
       securityId: item.securityId,
       symbol: (item.sourceReference?.symbol as string) || item.securityId,
-      sourceType: item.sourceType as 'SEC_EDGAR' | 'MARKET_DATA' | 'PORTFOLIO' | 'CANONICAL_METADATA',
+      sourceType: item.sourceType as EvidenceSourceType,
       provider: item.provider,
       epistemicStatus: item.epistemicStatus as 'REAL' | 'SIMULATED' | 'UNAVAILABLE' | 'CALCULATED',
       isSimulated: item.isSimulated,

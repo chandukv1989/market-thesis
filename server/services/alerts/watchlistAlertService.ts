@@ -209,8 +209,12 @@ export class WatchlistAlertService {
   // WATCHLIST OPERATIONS
   // ==========================================
 
-  public getWatchlist(): CanonicalWatchlistItem[] {
-    return Array.from(this.watchlist.values());
+  public getWatchlist(userId?: string): CanonicalWatchlistItem[] {
+    const list = Array.from(this.watchlist.values());
+    if (userId) {
+      return list.filter(w => !w.ownerUserId || w.ownerUserId === userId);
+    }
+    return list;
   }
 
   public getWatchlistItem(idOrSymbol: string): CanonicalWatchlistItem | undefined {
@@ -230,6 +234,7 @@ export class WatchlistAlertService {
     exchange?: string;
     currency?: string;
     notes?: string;
+    ownerUserId?: string;
   }): CanonicalWatchlistItem {
     const rawSym = item.symbol.trim();
     const resolved = resolveSecurity(rawSym);
@@ -244,7 +249,8 @@ export class WatchlistAlertService {
 
     // Check if already in watchlist
     const existing = Array.from(this.watchlist.values()).find(
-      w => w.securityId.toLowerCase() === securityId.toLowerCase() || (w.symbol.toUpperCase() === canonicalSym && w.exchange.toUpperCase() === exchange.toUpperCase())
+      w => (w.securityId.toLowerCase() === securityId.toLowerCase() || (w.symbol.toUpperCase() === canonicalSym && w.exchange.toUpperCase() === exchange.toUpperCase())) &&
+           (!item.ownerUserId || w.ownerUserId === item.ownerUserId)
     );
     if (existing) {
       if (item.notes) existing.notes = item.notes;
@@ -266,7 +272,9 @@ export class WatchlistAlertService {
       enabled: true,
       notes: item.notes,
       alertRuleIds: [],
-      ticker: canonicalSym
+      ticker: canonicalSym,
+      ownerUserId: item.ownerUserId,
+      userId: item.ownerUserId
     };
 
     this.watchlist.set(watchlistItemId, newItem);
@@ -297,9 +305,12 @@ export class WatchlistAlertService {
   // ALERT RULES OPERATIONS
   // ==========================================
 
-  public getAlertRules(filter?: { securityId?: string; symbol?: string; enabled?: boolean; alertType?: AlertRuleType }): AlertRule[] {
+  public getAlertRules(filter?: { securityId?: string; symbol?: string; enabled?: boolean; alertType?: AlertRuleType; userId?: string }): AlertRule[] {
     let result = Array.from(this.rules.values());
     if (filter) {
+      if (filter.userId) {
+        result = result.filter(r => !r.ownerUserId || r.ownerUserId === filter.userId);
+      }
       if (filter.securityId) {
         result = result.filter(r => r.securityId?.toLowerCase() === filter.securityId?.toLowerCase());
       }
@@ -332,6 +343,8 @@ export class WatchlistAlertService {
     cooldownMinutes?: number;
     enabled?: boolean;
     metadata?: Record<string, unknown>;
+    ownerUserId?: string;
+    userId?: string;
   }): AlertRule {
     const alertRuleId = `rule-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
     const now = new Date().toISOString();
@@ -343,6 +356,8 @@ export class WatchlistAlertService {
       else if (ruleData.alertType.includes('CROSSES_BELOW')) comparison = 'CROSSES_BELOW';
       else comparison = '>';
     }
+
+    const resolvedOwner = ruleData.ownerUserId || ruleData.userId;
 
     const newRule: AlertRule = {
       alertRuleId,
@@ -360,7 +375,9 @@ export class WatchlistAlertService {
       lastObservedValue: null,
       previousObservedValue: null,
       priority: ruleData.priority || 'WARNING',
-      metadata: ruleData.metadata
+      metadata: ruleData.metadata,
+      ownerUserId: resolvedOwner,
+      userId: resolvedOwner
     };
 
     this.rules.set(alertRuleId, newRule);
@@ -374,6 +391,10 @@ export class WatchlistAlertService {
     }
 
     return newRule;
+  }
+
+  public getAlertEvent(id: string): AlertEvent | undefined {
+    return this.events.find(e => e.eventId === id);
   }
 
   public updateAlertRule(id: string, updates: Partial<AlertRule>): AlertRule | undefined {
@@ -412,9 +433,13 @@ export class WatchlistAlertService {
     priority?: AlertPriority;
     securityId?: string;
     limit?: number;
+    userId?: string;
   }): AlertEvent[] {
     let result = [...this.events];
     if (filter) {
+      if (filter.userId) {
+        result = result.filter(e => !e.ownerUserId || e.ownerUserId === filter.userId);
+      }
       if (filter.isRead !== undefined) {
         result = result.filter(e => e.isRead === filter.isRead);
       }
@@ -607,7 +632,9 @@ export class WatchlistAlertService {
               contextualAnalysis: null,
               isRead: false,
               isAcknowledged: false,
-              fingerprint
+              fingerprint,
+              ownerUserId: rule.ownerUserId,
+              userId: rule.ownerUserId
             };
 
             this.events.unshift(event);

@@ -18,7 +18,9 @@ import {
   IWatchlistRepository,
   IAlertRepository,
   IPortfolioRepository,
-  IResearchQueryRepository
+  IResearchQueryRepository,
+  IUserRepository,
+  ISessionRepository
 } from '../types';
 import {
   PersistenceStatusResponse,
@@ -39,7 +41,9 @@ import {
   PostgresWatchlistRepository,
   PostgresAlertRepository,
   PostgresPortfolioRepository,
-  PostgresResearchQueryRepository
+  PostgresResearchQueryRepository,
+  PostgresUserRepository,
+  PostgresSessionRepository
 } from './postgresRepositories';
 import { getDatabaseConfig } from '../databaseConfig';
 
@@ -63,6 +67,8 @@ export class PostgresPersistenceAdapter implements IPersistenceAdapter {
   private alertRepo!: IAlertRepository;
   private portfolioRepo!: IPortfolioRepository;
   private queryRepo!: IResearchQueryRepository;
+  private userRepo!: IUserRepository;
+  private sessionRepo!: ISessionRepository;
 
   constructor(client?: PostgresClient) {
     this.client = client || new PostgresClient();
@@ -96,6 +102,8 @@ export class PostgresPersistenceAdapter implements IPersistenceAdapter {
     this.alertRepo = new PostgresAlertRepository(this.client);
     this.portfolioRepo = new PostgresPortfolioRepository(this.client);
     this.queryRepo = new PostgresResearchQueryRepository(this.client);
+    this.userRepo = new PostgresUserRepository(this.client);
+    this.sessionRepo = new PostgresSessionRepository(this.client);
   }
 
   public async shutdown(): Promise<void> {
@@ -124,6 +132,8 @@ export class PostgresPersistenceAdapter implements IPersistenceAdapter {
   public getAlertRepository(): IAlertRepository { return this.alertRepo; }
   public getPortfolioRepository(): IPortfolioRepository { return this.portfolioRepo; }
   public getQueryRepository(): IResearchQueryRepository { return this.queryRepo; }
+  public getUserRepository(): IUserRepository { return this.userRepo; }
+  public getSessionRepository(): ISessionRepository { return this.sessionRepo; }
 
   public async getStatus(): Promise<PersistenceStatusResponse> {
     const config = getDatabaseConfig();

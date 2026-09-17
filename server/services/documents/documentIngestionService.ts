@@ -38,11 +38,32 @@ export class DocumentIngestionService {
       fileContentBase64,
       fileText,
       documentType: explicitType,
-      uploadedBy = 'system_user'
+      uploadedBy = 'system_user',
+      ownerUserId,
+      userId
     } = request;
+
+    const resolvedOwner = ownerUserId || userId;
 
     if (!fileName) {
       throw new Error('Document ingestion requires a valid fileName.');
+    }
+
+    // Phase 18 Hardening: Path traversal protection & file sanitization
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      throw new Error('Invalid fileName: Path traversal sequence or directory separators detected.');
+    }
+
+    const sanitizedFileName = fileName.trim();
+    if (!sanitizedFileName) {
+      throw new Error('Invalid fileName: Filename cannot be empty.');
+    }
+
+    // Prohibited executable & unsafe extensions
+    const prohibitedExtensions = ['.exe', '.sh', '.bat', '.cmd', '.dll', '.so', '.bin', '.msi', '.vbs', '.js', '.py'];
+    const lowerName = sanitizedFileName.toLowerCase();
+    if (prohibitedExtensions.some(ext => lowerName.endsWith(ext))) {
+      throw new Error(`Disallowed file extension in '${sanitizedFileName}'. Executable or script files are strictly prohibited.`);
     }
 
     // 1. Resolve buffer
@@ -53,6 +74,12 @@ export class DocumentIngestionService {
       buffer = Buffer.from(fileText, 'utf-8');
     } else {
       throw new Error('Document ingestion requires either fileContentBase64 or fileText.');
+    }
+
+    // Phase 18 Hardening: File size enforcement (10MB limit)
+    const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+    if (buffer.length > MAX_FILE_SIZE_BYTES) {
+      throw new Error(`File size (${(buffer.length / (1024 * 1024)).toFixed(2)} MB) exceeds the maximum allowed limit of 10 MB.`);
     }
 
     // 2. Compute deterministic content hash (SHA-256)
@@ -71,17 +98,20 @@ export class DocumentIngestionService {
     }
 
     // 4. Resolve security association
+    const rawSecId = securityId || (request as any).securityIds?.[0];
     let canonicalSecId: string | undefined;
-    if (securityId) {
-      const canonical = resolveSecurity(securityId);
+    if (rawSecId) {
+      const canonical = resolveSecurity(rawSecId);
       if (canonical) {
         canonicalSecId = canonical.id;
+      } else {
+        canonicalSecId = rawSecId;
       }
     }
 
     // 5. Parse document deterministically
     const parseResult = await parseDocument({
-      fileName,
+      fileName: sanitizedFileName,
       fileBuffer: buffer,
       explicitFormat: explicitType
     });
@@ -93,8 +123,8 @@ export class DocumentIngestionService {
     const document: ResearchDocument = {
       documentId: docId,
       securityId: canonicalSecId,
-      title: title || fileName.replace(/\.[^/.]+$/, ''),
-      fileName,
+      title: title || sanitizedFileName.replace(/\.[^/.]+$/, ''),
+      fileName: sanitizedFileName,
       documentType: parseResult.documentType,
       sourceType: 'RESEARCH_DOCUMENT',
       provider,
@@ -102,6 +132,8 @@ export class DocumentIngestionService {
       availableFrom: availableFrom || publishedAt || now.split('T')[0],
       uploadedAt: now,
       uploadedBy,
+      ownerUserId: resolvedOwner,
+      userId: resolvedOwner,
       pageCount: parseResult.pageCount,
       characterCount: parseResult.characterCount,
       rowCount: parseResult.rowCount,
@@ -130,6 +162,12 @@ export class DocumentIngestionService {
 
     // 6. Convert parsed document into audited EvidenceItems
     const evidenceItems = documentEvidenceAdapter.createEvidenceItems(document, parseResult);
+    if (resolvedOwner) {
+      for (const item of evidenceItems) {
+        item.ownerUserId = resolvedOwner;
+        (item as any).userId = resolvedOwner;
+      }
+    }
 
     // 7. Chunk each EvidenceItem using the existing chunking engine
     const allChunks: EvidenceChunk[] = [];

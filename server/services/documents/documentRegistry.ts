@@ -84,14 +84,20 @@ export class DocumentRegistry {
   }
 
   /**
-   * Lists documents associated with a specific security.
+   * Lists documents associated with a specific security, optionally filtered by user ownership.
    */
-  public getDocumentsBySecurity(securityId?: string): ResearchDocument[] {
+  public getDocumentsBySecurity(securityId?: string, userId?: string): ResearchDocument[] {
+    let docs = Array.from(this.documents.values());
+    if (userId) {
+      docs = docs.filter(d => !d.ownerUserId || d.ownerUserId === userId);
+    } else {
+      docs = docs.filter(d => !d.ownerUserId);
+    }
     if (!securityId) {
-      return Array.from(this.documents.values()).filter(d => !d.securityId);
+      return docs.filter(d => !d.securityId);
     }
     const target = securityId.toLowerCase();
-    return Array.from(this.documents.values()).filter(d =>
+    return docs.filter(d =>
       d.securityId?.toLowerCase() === target ||
       d.securityId?.toLowerCase() === `sec-${target}` ||
       d.securityId?.toLowerCase().replace(/^sec-/, '') === target
@@ -99,10 +105,14 @@ export class DocumentRegistry {
   }
 
   /**
-   * Lists all registered documents.
+   * Lists all registered documents, optionally scoped to a user.
    */
-  public getAllDocuments(): ResearchDocument[] {
-    return Array.from(this.documents.values());
+  public getAllDocuments(userId?: string): ResearchDocument[] {
+    const docs = Array.from(this.documents.values());
+    if (userId) {
+      return docs.filter(d => !d.ownerUserId || d.ownerUserId === userId);
+    }
+    return docs.filter(d => !d.ownerUserId);
   }
 
   /**
